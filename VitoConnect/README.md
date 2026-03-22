@@ -61,19 +61,42 @@ Aktualisiert alle Daten von der Viessmann API.
 VVC_Update(36004);
 ```
 
-#### VVC_CreateZirku(int $InstanzID, string $Start, string $End, bool $Aktivieren)
-Setzt oder löscht den Zeitplan der Warmwasser-Zirkulationspumpe.
-
-Zeiten müssen in 10-Minuten-Intervallen angegeben werden (z.B. "06:00", "06:10", "22:30").
+#### VVC_StartZirkulation(int $InstanzID, int $Minuten)
+Startet die Zirkulationspumpe für die angegebene Dauer. Das Modul übernimmt automatisch:
+- Zeitberechnung und Rundung auf 10-Minuten-Intervalle (Viessmann-Vorgabe)
+- Sperre gegen Mehrfachauslösung (Variable `ZirkulationAktiv`)
+- Zähler für Aktivierungen (Variable `ZirkulationAnzahl`)
+- Automatisches Aufräumen nach Ablauf (Timer `ZirkulationStop`)
 
 ```php
-// Zirkulation aktivieren von 06:00 bis 06:10
-VVC_CreateZirku(36004, '06:00', '06:10', true);
+// Zirkulation für 10 Minuten starten
+VVC_StartZirkulation(36004, 10);
+```
 
-// Zeitplan komplett löschen (Zeiten sind dann Platzhalter)
+#### VVC_StopZirkulation(int $InstanzID)
+Stoppt die Zirkulation sofort: löscht den Zeitplan und setzt die Sperre zurück.
+Wird automatisch nach Ablauf aufgerufen, kann aber auch manuell genutzt werden.
+
+```php
+VVC_StopZirkulation(36004);
+```
+
+#### VVC_CreateZirku(int $InstanzID, string $Start, string $End, bool $Aktivieren)
+> **Veraltet** — nutze `VVC_StartZirkulation()` und `VVC_StopZirkulation()` stattdessen.
+> Bleibt für Abwärtskompatibilität erhalten.
+
+```php
+VVC_CreateZirku(36004, '06:00', '06:10', true);
 VVC_CreateZirku(36004, '00:00', '00:10', false);
 ```
 
-**Anwendungsbeispiel — Zirkulation per KNX-Taster für 10 Minuten aktivieren:**
+**Anwendungsbeispiel — Zirkulation per KNX-Taster:**
 
-Ein KNX-Lichtschalter (z.B. im Bad) kann als Auslöser dienen. Beim Drücken wird ein 10-Minuten-Zeitfenster ab der aktuellen Uhrzeit gesetzt. Ein Timer löscht den Zeitplan nach Ablauf automatisch wieder. So läuft die Pumpe nur bei Bedarf und spart Energie.
+Ein KNX-Lichtschalter (z.B. im Bad) kann als Auslöser dienen. Das IPS-Skript am Taster ist nur noch eine Zeile:
+
+```php
+<?php
+VVC_StartZirkulation(36004, 10);
+```
+
+Das Modul kümmert sich um alles: Zeitberechnung, Sperre, Zähler und automatisches Aufräumen.

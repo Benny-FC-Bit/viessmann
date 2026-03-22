@@ -50,6 +50,10 @@ class VitoConnect extends WebHookModule
         $this->RegisterAttributeString('GatewaySerial', '');
 
         $this->RegisterTimer('Update', 0, 'VVC_Update($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('ZirkulationStop', 0, 'VVC_StopZirkulation($_IPS[\'TARGET\']);');
+
+        $this->RegisterVariableBoolean('ZirkulationAktiv', 'Zirkulation aktiv', '~Switch', 90);
+        $this->RegisterVariableInteger('ZirkulationAnzahl', 'Zirkulation Aktivierungen', '', 91);
     }
 
     public function ApplyChanges()
@@ -635,104 +639,112 @@ class VitoConnect extends WebHookModule
         return $name;
     }
 	
-    public function CreateZirku($start,$end,$activate)
+    /**
+     * Startet die Zirkulationspumpe für die angegebene Dauer in Minuten.
+     * Berechnet automatisch das Zeitfenster und räumt nach Ablauf auf.
+     */
+    public function StartZirkulation(int $minutes)
     {
-		//https://api.viessmann.com/iot/v2/features/installations/{{installationID}}/gateways/{{gatewaySerial}}/devices/{{deviceId}}/features/heating.circuits.0.heating.schedule/commands/setSchedule
-		//$device_data_url = 'https://api.viessmann.com/iot/v2/features/installations/%s/gateways/%s/devices/0/features/';
-		//$action = 'heating.circuits.0.heating.schedule/commands/setSchedule';
-		$action = 'heating.dhw.pumps.circulation.schedule/commands/setSchedule';
-		//private function SendAction($url, $post_data = null)
-		$id = $this->ReadAttributeInteger('InstallationID');
-        $serial = $this->ReadAttributeString('GatewaySerial');
-		
-		
-		
-		$startTime = $start;
-        $endTime = $end;
-
-		if ($activate)
-		{
-			$schedule = [
-				"newSchedule" => [
-					"mon" => [
-						[
-							"mode" => "on",
-							"start" => $startTime,
-							"end" => $endTime,
-							"position" => 0
-						]
-					],
-					"tue" => [
-						[
-							"mode" => "on",
-							"start" => $startTime,
-							"end" => $endTime,
-							"position" => 0
-						]
-					],
-					"wed" => [
-						[
-							"mode" => "on",
-							"start" => $startTime,
-							"end" => $endTime,
-							"position" => 0
-						]
-					],
-					"thu" => [
-						[
-							"mode" => "on",
-							"start" => $startTime,
-							"end" => $endTime,
-							"position" => 0
-						]
-					],
-					"fri" => [
-						[
-							"mode" => "on",
-							"start" => $startTime,
-							"end" => $endTime,
-							"position" => 0
-						]
-					],
-					"sat" => [
-						[
-							"mode" => "on",
-							"start" => $startTime,
-							"end" => $endTime,
-							"position" => 0
-						]
-					],
-					"sun" => [
-						[
-							"mode" => "on",
-							"start" => $startTime,
-							"end" => $endTime,
-							"position" => 0
-						]
-					]
-				]
-			];
-		}
-		else
-		{
-			$schedule = [
-				"newSchedule" => [
-					"mon" => [],
-					"tue" => [],
-					"wed" => [],
-					"thu" => [],
-					"fri" => [],
-					"sat" => [],
-					"sun" => []
-				]
-			];
-		}
-		
-        if ($id == 0 || $serial == '') {
-            $this->LogMessage('InstallationID oder GatewaySerial fehlen (CreateZirku)', KL_ERROR);
-            throw new Exception('InstallationID oder GatewaySerial fehlen');
+        // Sperre prüfen
+        if ($this->GetValue('ZirkulationAktiv')) {
+            $this->SendDebug('Zirkulation', 'Bereits aktiv, Anfrage ignoriert', 0);
+            return;
         }
-		return $this->SendAction(sprintf($this->device_data_url, $id, $serial) . $action, $schedule);
-		
+
+        // Zeitfenster berechnen (Viessmann erfordert 10-Minuten-Intervalle)
+        $now = time();
+        $startMinutes = intval(date('i', $now));
+        $startRounded = $startMinutes - ($startMinutes % 10); // abrunden auf 10er
+        $startTime = date('H', $now) . ':' . sprintf('%02d', $startRounded);
+
+        $endTimestamp = $now + ($minutes * 60);
+        $endMinutes = intval(date('i', $endTimestamp));
+        $endRounded = $endMinutes + (10 - $endMinutes % 10); // aufrunden auf 10er
+        $endHour = intval(date('H', $endTimestamp));
+        if ($endRounded >= 60) {
+            $endRounded = 0;
+            $endHour++;
+        }
+        if ($endHour >= 24) {
+            $endTime = '24:00';
+        } else {
+            $endTime = sprintf('%02d:%02d', $endHour, $endRounded);
+        }
+
+        // Sonderfälle Tagesgrenze
+        if ($startTime >= '23:50' && $endTime < $startTime) {
+            $startTime = '23:50';
+            $endTime = '24:00';
+        }
+
+        $this->SendDebug('Zirkulation', 'Start: ' . $startTime . ', Ende: ' . $endTime . ', Dauer: ' . $minutes . ' Min.', 0);
+
+        // Schedule setzen
+        $this->SetCirculationSchedule($startTime, $endTime);
+
+        // Sperre setzen und Zähler erhöhen
+        $this->SetValue('ZirkulationAktiv', true);
+        $counter = $this->GetValue('ZirkulationAnzahl');
+        $this->SetValue('ZirkulationAnzahl', $counter + 1);
+
+        // Timer zum automatischen Aufräumen setzen (Dauer + 1 Minute Puffer)
+        $this->SetTimerInterval('ZirkulationStop', ($minutes + 1) * 60 * 1000);
+    }
+
+    /**
+     * Stoppt die Zirkulationspumpe: löscht den Zeitplan und setzt die Sperre zurück.
+     * Wird automatisch vom Timer aufgerufen oder kann manuell genutzt werden.
+     */
+    public function StopZirkulation()
+    {
+        $this->SendDebug('Zirkulation', 'Zeitplan wird gelöscht', 0);
+
+        // Schedule leeren
+        $this->SetCirculationSchedule('', '');
+
+        // Sperre zurücksetzen
+        $this->SetValue('ZirkulationAktiv', false);
+
+        // Timer deaktivieren
+        $this->SetTimerInterval('ZirkulationStop', 0);
+    }
+
+    /**
+     * Setzt oder löscht den Zirkulationspumpen-Zeitplan.
+     * Leere Strings für Start/End löschen den Schedule.
+     */
+    private function SetCirculationSchedule(string $start, string $end)
+    {
+        $action = 'heating.dhw.pumps.circulation.schedule/commands/setSchedule';
+        $days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+        $daySchedule = [];
+        foreach ($days as $day) {
+            if ($start !== '' && $end !== '') {
+                $daySchedule[$day] = [[
+                    'mode'     => 'on',
+                    'start'    => $start,
+                    'end'      => $end,
+                    'position' => 0
+                ]];
+            } else {
+                $daySchedule[$day] = [];
+            }
+        }
+
+        $this->RequestDeviceData($action, ['newSchedule' => $daySchedule]);
+    }
+
+    /**
+     * @deprecated Nutze StartZirkulation() und StopZirkulation() stattdessen.
+     * Bleibt für Abwärtskompatibilität erhalten.
+     */
+    public function CreateZirku(string $start, string $end, bool $activate)
+    {
+        if ($activate) {
+            $this->SetCirculationSchedule($start, $end);
+        } else {
+            $this->SetCirculationSchedule('', '');
+        }
     }
 }
