@@ -100,3 +100,12 @@ VVC_StartZirkulation(36004, 10);
 ```
 
 Das Modul kümmert sich um alles: Zeitberechnung, Sperre, Zähler und automatisches Aufräumen.
+
+**Sicherheitsjob (empfohlen):**
+
+Falls IPS während einer aktiven Zirkulation neustartet, geht der Aufräum-Timer verloren und der Schedule bleibt bei Viessmann stehen. Als Absicherung einen täglichen Zeitplan (z.B. 02:00 Uhr) einrichten:
+
+```php
+<?php
+VVC_StopZirkulation(36004);
+```
