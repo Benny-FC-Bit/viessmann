@@ -1,6 +1,8 @@
 # VitoConnect
 Das Modul dient dazu die VitoConnect Cloud-API abzufragen und alle relevanten Informationen über das angeschlossene Viessmann Gerät darzustellen.
 
+> **Hinweis:** Dies ist ein persönlicher Fork. Siehe [Hauptseite](../README.md) für wichtige Hinweise.
+
 ### Inhaltsverzeichnis
 
 1. [Funktionsumfang](#1-funktionsumfang)
@@ -15,20 +17,22 @@ Das Modul dient dazu die VitoConnect Cloud-API abzufragen und alle relevanten In
 
 * Abfrage der Daten, welche über die Cloud-API verfügbar sind
 * Ändern von Werten (aktuell nur die Ziel-Temperaturen)
+* Zirkulationspumpen-Steuerung über Zeitplan (CreateZirku)
 
 ### 2. Voraussetzungen
 
-- IP-Symcon ab Version 5.1
+- IP-Symcon ab Version 6.0
+- Symcon Connect (für OAuth-Redirect)
+- Viessmann Developer Account mit registrierter ClientID
 
 ### 3. Software-Installation
 
-* Über den Module Store das Modul Viessmann Vitoconnect installieren.
-* Alternativ über das Module Control folgende URL hinzufügen:  
-`https://github.com/paresy/Viessmann`  
+* Über das Module Control folgende URL hinzufügen:
+`https://github.com/Benny-FC-Bit/viessmann`
 
 ### 4. Einrichten der Instanzen in IP-Symcon
 
-- Unter "Instanz hinzufügen" ist das 'VitoConnect'-Modul unter dem Hersteller 'Viessmann' aufgeführt. Zusätzlich muss eine ClientID über das Developer Portal von Viessmann beantragt werden. Dies ist unter https://developer.viessmann.com/ im Menüpunkt "My Dashbaord" zu finden. Beim erstellen des Clients darf der Name frei gewählt werden - bei der Redirect URI muss die ipmagic.de Adresse eingegeben werden, welche in der VitoConnect Instanz angezeigt wird. Zur Verknüpfung innerhalb der VitoConnect Instanz wird ein aktivierter Symcon Connect benötigt. 
+- Unter "Instanz hinzufügen" ist das 'VitoConnect'-Modul unter dem Hersteller 'Viessmann' aufgeführt. Zusätzlich muss eine ClientID über das Developer Portal von Viessmann beantragt werden. Dies ist unter https://developer.viessmann.com/ im Menüpunkt "My Dashbaord" zu finden. Beim erstellen des Clients darf der Name frei gewählt werden - bei der Redirect URI muss die ipmagic.de Adresse eingegeben werden, welche in der VitoConnect Instanz angezeigt wird. Zur Verknüpfung innerhalb der VitoConnect Instanz wird ein aktivierter Symcon Connect benötigt.
 
 ![ClientID bei Viessmann beantragen](clientid.png)
 
@@ -50,4 +54,26 @@ Im WebFront werden alle Variablen angezeigt. Einige sind ggf. schaltbar.
 
 ### 7. PHP-Befehlsreferenz
 
-Es stehen keine weiteren Befehle zur Verfügung. 
+#### VVC_Update(int $InstanzID)
+Aktualisiert alle Daten von der Viessmann API.
+
+```php
+VVC_Update(36004);
+```
+
+#### VVC_CreateZirku(int $InstanzID, string $Start, string $End, bool $Aktivieren)
+Setzt oder löscht den Zeitplan der Warmwasser-Zirkulationspumpe.
+
+Zeiten müssen in 10-Minuten-Intervallen angegeben werden (z.B. "06:00", "06:10", "22:30").
+
+```php
+// Zirkulation aktivieren von 06:00 bis 06:10
+VVC_CreateZirku(36004, '06:00', '06:10', true);
+
+// Zeitplan komplett löschen (Zeiten sind dann Platzhalter)
+VVC_CreateZirku(36004, '00:00', '00:10', false);
+```
+
+**Anwendungsbeispiel — Zirkulation per KNX-Taster für 10 Minuten aktivieren:**
+
+Ein KNX-Lichtschalter (z.B. im Bad) kann als Auslöser dienen. Beim Drücken wird ein 10-Minuten-Zeitfenster ab der aktuellen Uhrzeit gesetzt. Ein Timer löscht den Zeitplan nach Ablauf automatisch wieder. So läuft die Pumpe nur bei Bedarf und spart Energie.
