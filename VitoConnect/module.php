@@ -51,6 +51,7 @@ class VitoConnect extends WebHookModule
 
         $this->RegisterTimer('Update', 0, 'VVC_Update($_IPS[\'TARGET\']);');
         $this->RegisterTimer('ZirkulationStop', 0, 'VVC_StopZirkulation($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('ZirkulationSperre', 0, 'VVC_ZirkulationSperreAufheben($_IPS[\'TARGET\']);');
 
         $this->RegisterVariableBoolean('ZirkulationAktiv', 'Zirkulation aktiv', '~Switch', 90);
         $this->RegisterVariableInteger('ZirkulationAnzahl', 'Zirkulation Aktivierungen', '', 91);
@@ -642,12 +643,13 @@ class VitoConnect extends WebHookModule
     /**
      * Startet die Zirkulationspumpe für die angegebene Dauer in Minuten.
      * Berechnet automatisch das Zeitfenster und räumt nach Ablauf auf.
+     * Nach dem Stopp bleibt eine 30-Minuten-Sperre aktiv (Abkühlschutz).
      */
     public function StartZirkulation(int $minutes)
     {
         // Sperre prüfen
         if ($this->GetValue('ZirkulationAktiv')) {
-            $this->SendDebug('Zirkulation', 'Bereits aktiv, Anfrage ignoriert', 0);
+            $this->SendDebug('Zirkulation', 'Gesperrt, Anfrage ignoriert', 0);
             return;
         }
 
@@ -687,12 +689,16 @@ class VitoConnect extends WebHookModule
         $counter = $this->GetValue('ZirkulationAnzahl');
         $this->SetValue('ZirkulationAnzahl', $counter + 1);
 
-        // Timer zum automatischen Aufräumen setzen (Dauer + 1 Minute Puffer)
+        // Timer zum Schedule-Aufräumen (Dauer + 1 Minute Puffer)
         $this->SetTimerInterval('ZirkulationStop', ($minutes + 1) * 60 * 1000);
+
+        // Sperre-Timer: 30 Minuten ab jetzt
+        $this->SetTimerInterval('ZirkulationSperre', 30 * 60 * 1000);
     }
 
     /**
-     * Stoppt die Zirkulationspumpe: löscht den Zeitplan und setzt die Sperre zurück.
+     * Stoppt die Zirkulationspumpe: löscht den Zeitplan.
+     * Die Sperre bleibt bis zum Ablauf der 30 Minuten bestehen.
      * Wird automatisch vom Timer aufgerufen oder kann manuell genutzt werden.
      */
     public function StopZirkulation()
@@ -702,11 +708,21 @@ class VitoConnect extends WebHookModule
         // Schedule leeren
         $this->SetCirculationSchedule('', '');
 
-        // Sperre zurücksetzen
-        $this->SetValue('ZirkulationAktiv', false);
-
-        // Timer deaktivieren
+        // Stop-Timer deaktivieren
         $this->SetTimerInterval('ZirkulationStop', 0);
+
+        // Sperre bleibt aktiv bis ZirkulationSperre-Timer abläuft
+    }
+
+    /**
+     * Hebt die Zirkulationssperre auf. Wird automatisch nach 30 Minuten aufgerufen.
+     */
+    public function ZirkulationSperreAufheben()
+    {
+        $this->SendDebug('Zirkulation', 'Sperre aufgehoben', 0);
+
+        $this->SetValue('ZirkulationAktiv', false);
+        $this->SetTimerInterval('ZirkulationSperre', 0);
     }
 
     /**
