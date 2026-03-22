@@ -98,6 +98,7 @@ class VitoConnect extends WebHookModule
     public function Update()
     {
         $this->ParseDeviceData($this->RequestDeviceData());
+        $this->SetStatus(IS_ACTIVE);
     }
 
     public function RequestAction($Ident, $Value)
