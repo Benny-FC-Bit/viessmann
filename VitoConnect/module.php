@@ -80,7 +80,7 @@ class VitoConnect extends WebHookModule
         $this->SetBuffer('Verifier', $base64url_encode(pack('H*', $random)));
         $this->SetBuffer('Challenge', $base64url_encode(pack('H*', hash('sha256', $this->GetBuffer('Verifier')))));
 
-        echo 'https://iam.viessmann.com/idp/v2/authorize?client_id=' . $this->ReadPropertyString('ClientID') . '&redirect_uri=' . $this->GetCallbackURL() . '&response_type=code&code_challenge=' . $this->GetBuffer('Verifier') . '&scope=IoT User offline_access';
+        echo $this->authorize_url . '?client_id=' . urlencode($this->ReadPropertyString('ClientID')) . '&redirect_uri=' . urlencode($this->GetCallbackURL()) . '&response_type=code&code_challenge=' . $this->GetBuffer('Challenge') . '&code_challenge_method=S256&scope=IoT%20User%20offline_access';
     }
 
     public function GetConfigurationForm()
@@ -186,22 +186,28 @@ class VitoConnect extends WebHookModule
         $data = json_decode($result);
 
         if ($data === null) {
-            die('Invalid response while fetching access token!');
+            $this->LogMessage('Ungültige Antwort beim Token-Abruf', KL_ERROR);
+            echo 'Invalid response while fetching access token!';
+            return;
         }
 
         if (isset($data->error)) {
-            die($data->error);
+            $this->LogMessage('Token-Fehler: ' . $data->error, KL_ERROR);
+            echo $data->error;
+            return;
         }
 
         if (!isset($data->token_type) || $data->token_type != 'Bearer') {
-            die('Bearer Token expected');
+            $this->LogMessage('Unerwarteter Token-Typ', KL_ERROR);
+            echo 'Bearer Token expected';
+            return;
         }
 
         $this->SendDebug('GotRefreshToken', print_r($data, true), 0);
 
         $this->WriteAttributeString('Token', $data->refresh_token);
         $this->SetBuffer('Token', $data->access_token);
-        $this->SetBuffer('Expires', $data->expires_in);
+        $this->SetBuffer('Expires', strval(time() + intval($data->expires_in) - 60));
 
         $this->Initialize();
 
@@ -261,20 +267,26 @@ class VitoConnect extends WebHookModule
             $data = json_decode($result);
 
             if ($data === null) {
-                die('Invalid response while fetching access token!');
+                $this->LogMessage('Ungültige Antwort beim Token-Refresh', KL_ERROR);
+                $this->SetStatus(201);
+                throw new Exception('Ungültige Antwort beim Token-Refresh');
             }
 
             if (isset($data->error)) {
-                die($data->error);
+                $this->LogMessage('Token-Refresh Fehler: ' . $data->error, KL_ERROR);
+                $this->SetStatus(201);
+                throw new Exception('Token-Refresh Fehler: ' . $data->error);
             }
 
             if (!isset($data->token_type) || $data->token_type != 'Bearer') {
-                die('Bearer Token expected');
+                $this->LogMessage('Unerwarteter Token-Typ beim Refresh', KL_ERROR);
+                $this->SetStatus(201);
+                throw new Exception('Bearer Token erwartet');
             }
 
             $this->WriteAttributeString('Token', $data->refresh_token);
             $this->SetBuffer('Token', $data->access_token);
-            $this->SetBuffer('Expires', $data->expires_in);
+            $this->SetBuffer('Expires', strval(time() + intval($data->expires_in) - 60));
 
             $accessToken = $data->access_token;
         }
@@ -291,15 +303,42 @@ class VitoConnect extends WebHookModule
 
         $options = [
             'http' => [
-                'header' => 'Authorization: Bearer ' . $accessToken . "\r\n",
+                'header'        => 'Authorization: Bearer ' . $accessToken . "\r\n",
+                'ignore_errors' => true
             ]
         ];
 
         $context = stream_context_create($options);
         $result = file_get_contents($url, false, $context);
 
+        // HTTP-Statuscode aus Response-Header auslesen
+        $httpCode = 0;
+        if (isset($http_response_header) && is_array($http_response_header)) {
+            foreach ($http_response_header as $header) {
+                if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $matches)) {
+                    $httpCode = intval($matches[1]);
+                }
+            }
+        }
+
         if ($result === false) {
-            die('Fetching data failed!');
+            $this->LogMessage('Datenabruf fehlgeschlagen: ' . $url, KL_ERROR);
+            throw new Exception('Datenabruf fehlgeschlagen');
+        }
+
+        // Rate-Limit Behandlung
+        if ($httpCode == 429) {
+            $this->LogMessage('Viessmann API Rate-Limit erreicht (HTTP 429). Nächster Versuch beim nächsten Update-Zyklus.', KL_WARNING);
+            $this->SendDebug('RateLimit', 'HTTP 429 - Rate-Limit erreicht', 0);
+            throw new Exception('API Rate-Limit erreicht (HTTP 429). Bitte Abfrageintervall erhöhen.');
+        }
+
+        if ($httpCode == 401) {
+            $this->SendDebug('TokenExpired', 'HTTP 401 - Token ungültig, erzwinge Refresh', 0);
+            $this->SetBuffer('Token', '');
+            $this->SetBuffer('Expires', '0');
+            $this->SetStatus(201);
+            throw new Exception('Token ungültig (HTTP 401). Token-Refresh wird beim nächsten Aufruf versucht.');
         }
 
         $this->SendDebug('GotData', $result, 0);
@@ -307,11 +346,13 @@ class VitoConnect extends WebHookModule
         $data = json_decode($result);
 
         if ($data === null) {
-            die('Invalid response while fetching data!');
+            $this->LogMessage('Ungültige API-Antwort', KL_ERROR);
+            throw new Exception('Ungültige API-Antwort');
         }
 
         if (isset($data->error)) {
-            die($data->error);
+            $this->LogMessage('API-Fehler: ' . $data->error, KL_ERROR);
+            throw new Exception('API-Fehler: ' . $data->error);
         }
 
         return $data;
@@ -326,17 +367,40 @@ class VitoConnect extends WebHookModule
 
         $options = [
             'http' => [
-                'method'  => 'POST',
-                'header'  => 'Authorization: Bearer ' . $accessToken . "\r\nContent-Type: application/json\r\nAccept: application/vnd.siren+json\r\n",
-                'content' => ($post_data == null) ? '{}' : json_encode($post_data)
+                'method'        => 'POST',
+                'header'        => 'Authorization: Bearer ' . $accessToken . "\r\nContent-Type: application/json\r\nAccept: application/vnd.siren+json\r\n",
+                'content'       => ($post_data == null) ? '{}' : json_encode($post_data),
+                'ignore_errors' => true
             ]
         ];
-	
+
         $context = stream_context_create($options);
         $result = file_get_contents($url, false, $context);
 
+        // HTTP-Statuscode auslesen
+        $httpCode = 0;
+        if (isset($http_response_header) && is_array($http_response_header)) {
+            foreach ($http_response_header as $header) {
+                if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $matches)) {
+                    $httpCode = intval($matches[1]);
+                }
+            }
+        }
+
         if ($result === false) {
-            die('Fetching data failed!');
+            $this->LogMessage('Aktion fehlgeschlagen: ' . $url, KL_ERROR);
+            throw new Exception('Aktion fehlgeschlagen');
+        }
+
+        if ($httpCode == 429) {
+            $this->LogMessage('API Rate-Limit erreicht bei Aktion (HTTP 429)', KL_WARNING);
+            throw new Exception('API Rate-Limit erreicht (HTTP 429)');
+        }
+
+        if ($httpCode >= 400) {
+            $this->SendDebug('ActionError', 'HTTP ' . $httpCode . ': ' . $result, 0);
+            $this->LogMessage('Aktion fehlgeschlagen: HTTP ' . $httpCode, KL_ERROR);
+            throw new Exception('Aktion fehlgeschlagen: HTTP ' . $httpCode);
         }
 
         $this->SendDebug('Success', $result, 0);
@@ -348,7 +412,9 @@ class VitoConnect extends WebHookModule
         $serial = $this->ReadAttributeString('GatewaySerial');
 
         if ($id == 0 || $serial == '') {
-            die('InstallationID or GatewaySerial are missing');
+            $this->LogMessage('InstallationID oder GatewaySerial fehlen', KL_ERROR);
+            $this->SetStatus(202);
+            throw new Exception('InstallationID oder GatewaySerial fehlen. Bitte neu authentifizieren.');
         }
 
         if ($action) {
@@ -390,7 +456,9 @@ class VitoConnect extends WebHookModule
                     $this->SetValue($ident, $value);
                     break;
                 default:
-                    die('Unsupported variable type:' . $type . ', id: ' . $id . ', value:' . print_r($value, true));
+                    $this->SendDebug('Unsupported Type', 'type: ' . $type . ', id: ' . $id . ', value: ' . print_r($value, true), 0);
+                    $this->LogMessage('Nicht unterstützter Variablentyp: ' . $type . ' für ' . $id, KL_WARNING);
+                    return;
             }
         };
 
@@ -660,9 +728,9 @@ class VitoConnect extends WebHookModule
 		}
 		
         if ($id == 0 || $serial == '') {
-            die('InstallationID or GatewaySerial are missing');
+            $this->LogMessage('InstallationID oder GatewaySerial fehlen (CreateZirku)', KL_ERROR);
+            throw new Exception('InstallationID oder GatewaySerial fehlen');
         }
-		//echo json_encode($schedule);
 		return $this->SendAction(sprintf($this->device_data_url, $id, $serial) . $action, $schedule);
 		
     }
