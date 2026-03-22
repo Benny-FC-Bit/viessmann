@@ -3,5 +3,6 @@
 .env.*.local
 *.log
 temp_clone/
+screenshot/
 CLAUDE.md
 .claude/
