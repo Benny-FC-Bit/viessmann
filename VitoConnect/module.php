@@ -55,6 +55,7 @@ class VitoConnect extends WebHookModule
 
         $this->RegisterVariableBoolean('ZirkulationAktiv', 'Zirkulation aktiv', '~Switch', 90);
         $this->RegisterVariableInteger('ZirkulationAnzahl', 'Zirkulation Aktivierungen', '', 91);
+        $this->RegisterAttributeInteger('ZirkulationSperreEnde', 0);
     }
 
     public function ApplyChanges()
@@ -68,6 +69,12 @@ class VitoConnect extends WebHookModule
             $this->SetTimerInterval('Update', $this->ReadPropertyInteger('Interval') * 60 * 1000);
         } else {
             $this->SetTimerInterval('Update', 0);
+        }
+
+        // Zirkulationssperre nach IPS-Neustart aufräumen falls abgelaufen
+        $sperreEnde = $this->ReadAttributeInteger('ZirkulationSperreEnde');
+        if ($sperreEnde > 0 && time() >= $sperreEnde) {
+            $this->ZirkulationSperreAufheben();
         }
     }
 
@@ -647,10 +654,16 @@ class VitoConnect extends WebHookModule
      */
     public function StartZirkulation(int $minutes)
     {
-        // Sperre prüfen
-        if ($this->GetValue('ZirkulationAktiv')) {
-            $this->SendDebug('Zirkulation', 'Gesperrt, Anfrage ignoriert', 0);
+        // Sperre prüfen — Timestamp-basiert für Robustheit bei IPS-Neustart
+        $sperreEnde = $this->ReadAttributeInteger('ZirkulationSperreEnde');
+        if ($sperreEnde > 0 && time() < $sperreEnde) {
+            $rest = $sperreEnde - time();
+            $this->SendDebug('Zirkulation', 'Gesperrt, Anfrage ignoriert (noch ' . $rest . 's)', 0);
             return;
+        }
+        // Falls Sperre abgelaufen aber Variable noch true → aufräumen
+        if ($sperreEnde > 0 && time() >= $sperreEnde) {
+            $this->ZirkulationSperreAufheben();
         }
 
         // Zeitfenster berechnen (Viessmann erfordert 10-Minuten-Intervalle)
@@ -692,7 +705,8 @@ class VitoConnect extends WebHookModule
         // Timer zum Schedule-Aufräumen (Dauer + 1 Minute Puffer)
         $this->SetTimerInterval('ZirkulationStop', ($minutes + 1) * 60 * 1000);
 
-        // Sperre-Timer: 30 Minuten ab jetzt
+        // Sperre: Timestamp speichern + Timer als Backup
+        $this->WriteAttributeInteger('ZirkulationSperreEnde', time() + 30 * 60);
         $this->SetTimerInterval('ZirkulationSperre', 30 * 60 * 1000);
     }
 
@@ -722,6 +736,7 @@ class VitoConnect extends WebHookModule
         $this->SendDebug('Zirkulation', 'Sperre aufgehoben', 0);
 
         $this->SetValue('ZirkulationAktiv', false);
+        $this->WriteAttributeInteger('ZirkulationSperreEnde', 0);
         $this->SetTimerInterval('ZirkulationSperre', 0);
     }
 
